@@ -5,4 +5,5 @@
   roles:
     - kernel-tuning
     - monitoring-agent
+    - trading-app-deploy
     - bod-checks
