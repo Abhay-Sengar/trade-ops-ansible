@@ -1,0 +1,7 @@
+---
+- name: Configure trading node
+  hosts: trading_nodes
+  become: true
+  roles:
+    - kernel-tuning
+    - bod-checks
