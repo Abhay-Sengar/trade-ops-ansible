@@ -1,9 +1,9 @@
 ---
-# Core(s) to isolate for the trading workload. The VM has 3 vCPUs (0,1,2) —
-# we isolate cpu 2 and leave 0-1 for the OS / housekeeping.
+# Core(s) to isolate for the trading workload. The VM has 4 vCPUs (0,1,2,3) —
+# we isolate cpu 2 and leave 0-1 and 3 for the OS / housekeeping.
 kernel_tuning_isolated_cpus: "2"
 
-# Explicit 2 MB hugepages to reserve. 64 = 128 MB — modest for a 4 GB VM.
+# Explicit 2 MB hugepages to reserve. 64 = 128 MB — modest for a 3 GB VM.
 kernel_tuning_hugepages_count: 64
 
 kernel_tuning_cmdline_params:

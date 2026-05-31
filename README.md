@@ -12,7 +12,7 @@ This project deliberately exercises every line of the Trade Operations Engineer 
 
 - **Low-latency infrastructure management** — kernel tuning for CPU isolation, hugepages, and network latency, applied idempotently with Ansible.
 - **Automation with Ansible** — playbooks, roles, inventory, handlers, `--check` mode, and `ansible-lint` clean at the `production` profile.
-- **Linux kernel parameter tuning** — `isolcpus` / `nohz_full` / `rcu_nocbs`, Transparent Huge Pages disabled, explicit hugepages, and a set of low-latency network sysctls.
+- **Linux kernel parameter tuning** — `isolcpus` / `nohz_full` / `rcu_nocbs`, Transparent Huge Pages disabled, explicit hugepages, a set of low-latency network sysctls, IRQ-affinity pinning to housekeeping cores, and preemption-model detection.
 - **Beginning-of-Day checks** — a readiness script run pre-open by a systemd timer, gating the market open.
 - **Monitoring & alerting** — a live dashboard with per-core CPU, interrupts, context switches, network, and a **custom tick-to-trade histogram** from the trading engine.
 - **End-to-end stack literacy** — a simulated FIX 4.2 session (logon, orders, execution reports) between a trading engine and a mock exchange.
@@ -86,7 +86,7 @@ trade-ops-ansible/
 ├── scripts/
 │   └── latency_demo.sh          # tc/netem latency-injection demo helper
 ├── README.md
-└── PROJECT_DEEP_DIVE.md         # Full design/ops study guide (read this to understand everything)
+└── ProjectDeepDive.md          # Full design/ops study guide (read this to understand everything)
 ```
 
 ---
@@ -129,7 +129,7 @@ ansible-playbook playbooks/site.yml
 
 | Role | What it does | Key outcomes |
 |---|---|---|
-| `kernel-tuning` | Sets `isolcpus=2 nohz_full=2 rcu_nocbs=2 transparent_hugepage=never` on the GRUB cmdline; applies low-latency sysctls; reserves hugepages; sets governor (bare-metal only); disables irqbalance (if present). | `/proc/cmdline` shows isolation; 64 hugepages reserved; THP off. |
+| `kernel-tuning` | Sets `isolcpus=2 nohz_full=2 rcu_nocbs=2 transparent_hugepage=never` on the GRUB cmdline; applies low-latency sysctls; reserves hugepages; sets governor (bare-metal only); disables irqbalance (if present); pins device IRQs to a computed housekeeping mask (off the isolated core); detects and reports the kernel preemption model. | `/proc/cmdline` shows isolation; 64 hugepages reserved; THP off; device IRQs land on housekeeping cores (e.g. `0xa`). |
 | `monitoring-agent` | Installs Netdata (static build), binds it on all interfaces, configures it to scrape the engine's Prometheus endpoint. | Dashboard on `:19999`, scraping `:8000`. |
 | `trading-app-deploy` | Creates a Python venv, installs `simplefix` + `prometheus-client`, deploys the mock exchange and trading engine, installs their systemd units (engine pinned to CPU 2), tells Netdata to scrape the engine. | Two running services; live T2T metrics. |
 | `bod-checks` | Deploys the BOD readiness script + config; installs a systemd service and a pre-open timer (Mon–Fri 08:45 IST); sets the timezone; ensures chrony. | `bod-check.timer` armed; `bod_check.sh` returns PASS/WARN/FAIL. |
@@ -182,10 +182,11 @@ The dashboard shows these alongside system metrics: **per-core CPU** (including 
 
 - **VM, not bare metal.** Latency numbers reflect host-scheduler jitter, not silicon determinism. Real validation requires bare metal with pinned cores, BIOS C-states/turbo disabled, a PREEMPT_RT or tickless kernel, and a 24-hour `cyclictest` under load.
 - **CPU governor** isn't exposed inside the VM, so that tuning is skipped (and clearly noted) — it's a BIOS/bare-metal step.
+- **IRQ pinning is best-effort and honestly reported.** `smp_affinity` is a *request* the kernel intersects with what each IRQ allows; the role reports the *effective* mask it reads back, not the requested one (on this VM `0xb` settled to `0xa`). **PREEMPT_RT** is detected and reported, not installed — that's a separate kernel build, out of scope. Together with the governor and irqbalance skips, these are four honest "I know the bare-metal step; here's what the VM allows" demonstrations.
 - **Control and managed node are co-located** on one VM for resource reasons. The Ansible roles, inventory, SSH transport, and idempotency are identical to managing remote colocation servers; in production you simply point the inventory at the colo hosts.
 
 ## Tech stack
 
 Ubuntu Server · Ansible / ansible-lint · Netdata · Python 3 (`simplefix`, `prometheus-client`) · systemd · chrony · `tc/netem` · `rt-tests` (`cyclictest`) · VirtualBox · Git/GitHub.
 
-**For the full reasoning behind every decision, a line-by-line explanation of the FIX scripts, a complete data-flow map, and an interview Q&A bank, see [`PROJECT_DEEP_DIVE.md`](./PROJECT_DEEP_DIVE.md).**
+**For the full reasoning behind every decision, a line-by-line explanation of the FIX scripts, a complete data-flow map, and an interview Q&A bank, see [`ProjectDeepDive.md`](./ProjectDeepDive.md).**
