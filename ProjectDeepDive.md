@@ -1,6 +1,6 @@
-# Project Deep Dive & Interview Study Guide
+# Project Deep Dive & Study Guide
 
-This is the document to **study from**. It assumes you are new to the operations domain and explains every concept from first principles, why each decision was made, exactly what data moves where and who sends it, and how all of it maps to the Trade Operations Engineer role. Read it top to bottom once, then use the Q&A bank (Section 14) and Glossary (Section 16) to drill.
+This is the document to **study from**. It assumes you are new to the operations domain and explains every concept from first principles, why each decision was made, exactly what data moves where and who sends it, and how all of it maps to the Trade Operations Engineer role. Read it top to bottom once, then use the FAQ (Section 14) and Glossary (Section 16) to drill.
 
 ---
 
@@ -19,7 +19,7 @@ This is the document to **study from**. It assumes you are new to the operations
 11. The two scenarios, in depth
 12. Directory structure, annotated
 13. Mapping to the job description
-14. Interview Q&A bank
+14. FAQ (frequently asked questions)
 15. Honest limitations & how bare metal differs
 16. Glossary
 
@@ -27,7 +27,7 @@ This is the document to **study from**. It assumes you are new to the operations
 
 ## 1. How to use this document
 
-The project simulates the daily reality of keeping a low-latency trading server healthy and fast. There are four "planes" (groups of responsibility). If you can explain each plane, why each setting exists, and what would be different on real hardware, you can defend the whole project. Every time you see a setting, ask yourself the three questions an interviewer will ask: **What does it do? Why does it matter for trading? What changes on bare metal?**
+The project simulates the daily reality of keeping a low-latency trading server healthy and fast. There are four "planes" (groups of responsibility). If you can explain each plane, why each setting exists, and what would be different on real hardware, you understand the whole project. Every time you see a setting, ask yourself three questions: **What does it do? Why does it matter for trading? What changes on bare metal?**
 
 ---
 
@@ -62,7 +62,7 @@ Windows laptop (host)
 
 We considered dual-booting Ubuntu directly on the laptop to get "real" bare-metal kernel access. We chose a VM instead because:
 
-- **Risk.** Repartitioning a live Windows disk the night before an interview risks an unbootable machine and a lost evening. The reward was small.
+- **Risk.** Repartitioning a live Windows disk risks an unbootable machine and a lost evening. The reward was small.
 - **The numbers don't matter here anyway.** The *value* of the kernel-tuning work is the *workflow and knowledge*, which are identical in a VM. Bare metal's only real gain was RAM headroom and "authentic" latency figures — and we explicitly treat the figures as a methodology demo, not production numbers.
 - **A stable demo.** Sharing a VM window from the familiar Windows desktop is far safer for a live screen-share than rebooting into a freshly-installed Linux.
 
@@ -113,7 +113,7 @@ This VM happens to run a very new Ubuntu development build (kernel 7.0, Python 3
 
 Order matters: BOD's config lists the trading services, so those services should be deployed before BOD's config references them.
 
-A few professional touches an interviewer will notice: every task is named with a capitalized, human sentence; we use real modules (not raw shell) wherever possible so Ansible can report change state correctly; tasks that can't run meaningfully in check mode are guarded with `when: not ansible_check_mode`; read-only fact-gathering is marked `check_mode: false` so it always runs.
+A few professional touches worth noting: every task is named with a capitalized, human sentence; we use real modules (not raw shell) wherever possible so Ansible can report change state correctly; tasks that can't run meaningfully in check mode are guarded with `when: not ansible_check_mode`; read-only fact-gathering is marked `check_mode: false` so it always runs.
 
 ---
 
@@ -137,7 +137,7 @@ Together, the first three quiet a single core; the fourth removes a memory-manag
 
 **Memory & scheduler sysctls:**
 
-- `vm.nr_hugepages = 64` — pre-reserves 64 × 2 MB = 128 MB of "huge pages." Normal memory pages are 4 KB; huge pages are 2 MB, so the CPU's address-translation cache (the TLB) covers far more memory with fewer entries → fewer expensive TLB misses on large working sets. Reserving them at a fixed count avoids fragmentation later.
+- `vm.nr_hugepages = 64` — pre-reserves 64 × 2 MB = 128 MB of "huge pages." Normal memory pages are 4 KB; huge pages are 2 MB, so the CPU's address-translation cache (the TLB) covers far more memory with fewer entries → fewer expensive TLB misses on large working sets. Reserving them at a fixed count avoids fragmentation later. **Reserved ≠ consumed:** explicit hugepages are opt-in — an app must request them via `mmap(MAP_HUGETLB)`, `SHM_HUGETLB`, or a `hugetlbfs` mount. A plain Python process never does, so `grep Huge /proc/meminfo` shows `HugePages_Free: 64` (the whole pool idle). This is intentional — the same "provision the production substrate, consumer out of scope" pattern as the governor and IRQ-pinning steps. Wiring a real consumer would mean a C++ engine or an explicit `MAP_HUGETLB` allocation. (Note this is the opposite of THP, which the kernel hands out *automatically* — and which we deliberately disabled below to avoid compaction stalls.)
 - `vm.swappiness = 10` — strongly discourage swapping to disk (swapping a trading process is catastrophic for latency).
 - `vm.stat_interval = 120` — update VM statistics less often, reducing periodic background work.
 - `kernel.numa_balancing = 0` and `kernel.timer_migration = 0` (best-effort) — disable automatic NUMA page migration and timer migration, both of which can move work around unpredictably. Marked best-effort because they may not exist on every kernel.
@@ -179,6 +179,7 @@ Installing a PREEMPT_RT kernel is a separate kernel build and a reboot into a ne
 - **Why the static build?** The distro had no `netdata` package (bleeding-edge release), so we used Netdata's official installer with `--static-only`: a self-contained build under `/opt/netdata` that works on any distribution. Telemetry disabled, auto-updates off.
 - **Binding:** we template `/opt/netdata/etc/netdata/netdata.conf` with `[web] bind to = 0.0.0.0:19999`. This matters because VirtualBox's NAT port-forward delivers to the guest's NAT interface, not loopback — so Netdata must listen on all interfaces, not just `127.0.0.1`, to be reachable from the host browser.
 - **Scraping the engine:** we drop `/opt/netdata/etc/netdata/go.d/prometheus.conf` telling Netdata's Prometheus collector to scrape `http://127.0.0.1:8000/metrics` every second. That's how our custom tick-to-trade metrics appear on the dashboard.
+- **Per-core CPU charts:** Netdata's `proc` plugin ships per-core utilization (`cpu.cpuN`) **off by default** in current versions (`per cpu core utilization = no`). The template enables it via a `[plugin:proc:/proc/stat]` section, so the dashboard exposes one chart per core (`cpu0`–`cpu3`) under **System → CPU**. This matters here specifically: it's what makes the isolated core (`cpu2`) visible as its own line, distinct from the housekeeping cores — the visual proof that `isolcpus=2` + `CPUAffinity=2` work end to end. Without the toggle you only get the aggregate `system.cpu` and the isolation is invisible.
 
 ### 5.3 `trading-app-deploy` — the FIX workload
 
@@ -292,7 +293,9 @@ We expose four metrics from the engine on `:8000/metrics` in Prometheus text for
 - **`engine_orders_total` (Counter)** — total orders sent; a counter only goes up, and its *rate* gives orders/second.
 - **`engine_fills_total` (Counter)** — total execution reports received.
 
-**Why both a histogram and a gauge?** The histogram is what a real system uses (you care about p99, not the last value). The gauge is for *demo legibility* — it makes the latency injection visually unmistakable. Knowing the difference (and why histograms are right for latency) is a strong interview point.
+**Why both a histogram and a gauge?** The histogram is what a real system uses (you care about p99, not the last value). The gauge is for *demo legibility* — it makes the latency injection visually unmistakable. Knowing the difference (and why histograms are right for latency) is a key concept — see the FAQ.
+
+**Important: there is no Prometheus *server* here.** "Prometheus" names two distinct things, and this project uses only one of them. (1) The **Prometheus exposition format** plus the **`prometheus-client` library** — `start_http_server(8000)` in the engine publishes the metrics above as plain text at `:8000/metrics`. That's the *producer*. (2) **Netdata's built-in Prometheus collector** (configured by the `go.d/prometheus.conf` from the `trading-app-deploy` role) reads that endpoint every second — that's the *consumer/scraper* that a standalone Prometheus database would otherwise play. We deliberately did *not* run Prometheus-the-server (it's the heavyweight stack we skipped for RAM). Because the format is the standard, the same `/metrics` endpoint plugs into a real Prometheus + Grafana stack with zero code change — that portability is the point. Verify Netdata is actually ingesting it: `curl -s "http://127.0.0.1:19999/api/v1/allmetrics?format=prometheus" | grep tick_to_trade`.
 
 Baseline observed in this build: ~1,175 µs round trip on loopback inside the VM. Under injected latency (Section 11) it jumps to ~11 ms.
 
@@ -416,52 +419,66 @@ trade-ops-ansible/
 
 ---
 
-## 14. Interview Q&A bank
+## 14. FAQ (frequently asked questions)
 
-**"Walk me through your project."**
-> I built a miniature trade-ops environment that mirrors the daily job. An Ansible-managed Ubuntu trading node with low-latency kernel tuning; a simulated FIX order flow with tick-to-trade instrumentation; a live Netdata dashboard; and Beginning-of-Day checks that gate the market open. I also have two live demos: injecting network latency and watching tick-to-trade spike, and killing a service to show systemd self-heal. It runs in a VM, so I treat latency numbers as a methodology demonstration, not production figures.
+These are the questions worth being able to answer cold — each gets at whether the project does what it claims. They double as a self-test: cover the answer and try to reconstruct it.
 
-**"Why these kernel parameters?"**
-> `isolcpus` removes a core from the scheduler's load-balancer; `nohz_full` stops the timer tick on it (when only one task runs there); `rcu_nocbs` offloads RCU callbacks — together they quiet a core for the trading thread. THP off avoids compaction jitter; explicit hugepages cut TLB misses; `busy_poll`/`busy_read` reduce receive latency; raised socket buffers absorb bursts. On bare metal I'd add the performance governor and disable C-states/turbo in BIOS for frequency stability.
+**What is this project, in one paragraph?**
+> A miniature trade-ops environment that mirrors the daily job: an Ansible-managed Ubuntu trading node with low-latency kernel tuning; a simulated FIX order flow with tick-to-trade instrumentation; a live Netdata dashboard; and Beginning-of-Day checks that gate the market open. It includes two live demos — injecting network latency and watching tick-to-trade spike, and killing a service to show systemd self-heal. It runs in a VM, so latency numbers are a methodology demonstration, not production figures.
 
-**"Your latency numbers are on a VM — are they meaningful?"**
-> No, not in absolute terms, and I'm explicit about that. A VM on a shared host has scheduler jitter the guest can't control, and the vCPU backing my 'isolated' core is shared with the host. I trust only the relative before/after deltas and the workflow. On real colo bare metal you'd validate with a 24-hour `cyclictest` under production-equivalent load, with pinned cores and BIOS power management disabled.
+**Why these kernel parameters?**
+> `isolcpus` removes a core from the scheduler's load-balancer; `nohz_full` stops the timer tick on it (when only one task runs there); `rcu_nocbs` offloads RCU callbacks — together they quiet a core for the trading thread. THP off avoids compaction jitter; explicit hugepages cut TLB misses; `busy_poll`/`busy_read` reduce receive latency; raised socket buffers absorb bursts. On bare metal you'd add the performance governor and disable C-states/turbo in BIOS for frequency stability.
 
-**"How would this differ on real colocation bare metal?"**
+**What actually runs on the isolated core (CPU 2)?**
+> Only the trading engine, placed there explicitly by `CPUAffinity=2` in its systemd unit. Nothing else of ours is pinned there. The important nuance: `isolcpus` is not a hard partition — it stops the scheduler from *automatically* placing ordinary tasks on core 2, but the core still does a small amount of unavoidable kernel work: the residual ~1/sec timer tick that `nohz_full` can't remove, per-CPU kernel threads (kworkers, migration/stopper threads, ksoftirqd, RCU quiescent-state reporting), and occasional IPIs (TLB shootdowns, scheduler events). You can see what is *schedulable* there with `ps -eo pid,psr,comm | awk '$2==2'` and confirm the engine's pin with `taskset -cp $(pgrep -f trading_engine.py)`. Pushing closer to a truly silent core needs `cpuset` cgroups, IRQ pinning, and a PREEMPT_RT/tickless kernel — bare-metal territory. On top of all that, in a VM the "isolated" core is a vCPU the host schedules onto shared silicon, so isolation is real *to the guest scheduler* only.
+
+**Where do the mock exchange and Netdata run?**
+> On the housekeeping cores (0, 1, 3), placed automatically by the normal scheduler — which is exactly the point of isolating core 2. Neither has a `CPUAffinity` set. Keeping the mock exchange off core 2 matters: if both ends of the FIX round trip shared the isolated core they would contend with each other. Confirm with `taskset -cp $(pgrep -f mock_exchange.py)` (not pinned to 2).
+
+**Are the 64 reserved hugepages actually used?**
+> No — they are *reserved but not consumed*, and that is an honestly-scoped gap. `vm.nr_hugepages=64` locks a 128 MB pool of 2 MB pages away from normal allocation; `grep Huge /proc/meminfo` shows `HugePages_Free: 64` (equal to Total = nobody is using them). Explicit hugepages are **opt-in**: an app must request them via `mmap(MAP_HUGETLB)`, `SHM_HUGETLB`, or a `hugetlbfs` mount. A plain Python process (or any `malloc`) never touches the pool. This is deliberately the same "demonstrate the production substrate, consumer out of scope" pattern as the governor/IRQ-pinning steps: pre-allocating a pool at boot (to avoid fragmentation) and disabling THP (to avoid compaction stalls) is the real pattern; wiring a consumer would mean a C++ engine or `mmap(MAP_HUGETLB)`. Why it matters: one 2 MB page covers the span of 512 × 4 KB pages with a single TLB entry, so a large working set (order books, market-data buffers) gets far better TLB coverage and fewer page-walk stalls. See [§5.1](#51-kernel-tuning--the-low-latency-substrate).
+
+**Is there a Prometheus server in this project? Where is Prometheus configured?**
+> No Prometheus server and no Prometheus database. The project uses two things that share the name: (1) the **Prometheus text exposition format** plus the **`prometheus-client` Python library**, which the engine uses — `start_http_server(8000)` publishes the metrics in that format at `:8000/metrics` (the *producer*); and (2) **Netdata's built-in Prometheus collector**, configured by the `go.d/prometheus.conf` we deploy in `trading-app-deploy`, which scrapes `:8000/metrics` every second (the *consumer/scraper*). Netdata stores the series in its own dbengine TSDB and renders them. So the chain is: engine exposes Prometheus-format metrics → Netdata scrapes → Netdata TSDB → dashboard. The format is the standard, so the same `/metrics` endpoint plugs straight into a real Prometheus+Grafana stack with no code change. See [§8](#8-tick-to-trade-and-the-metrics).
+
+**How would this differ on real colocation bare metal?**
 > Pinned physical cores, BIOS C-states/turbo/hyper-threading decisions, a PREEMPT_RT or tickless kernel, real NIC interrupt affinity with irqbalance disabled, possibly kernel-bypass NICs (Solarflare/Onload, DPDK), NUMA-aware placement, and PTP-grade time sync. The Ansible automation and the parameter choices carry over unchanged; only the substrate and the achievable numbers change.
 
-**"PREEMPT_RT vs PREEMPT_DYNAMIC?"**
-> PREEMPT_RT is a kernel build that makes almost all kernel code preemptible (sleeping spinlocks, threaded IRQs) for the lowest latency, at some throughput cost. PREEMPT_DYNAMIC lets you choose none/voluntary/full preemption at boot via `preempt=` without recompiling — but it can't select RT. So DYNAMIC is flexibility across the non-RT models; RT is a different, fully-preemptible build.
+**PREEMPT_RT vs PREEMPT_DYNAMIC?**
+> PREEMPT_RT is a kernel build that makes almost all kernel code preemptible (sleeping spinlocks, threaded IRQs) for the lowest latency, at some throughput cost. PREEMPT_DYNAMIC lets you choose none/voluntary/full preemption at boot via `preempt=` without recompiling — but it can't select RT. So DYNAMIC is flexibility across the non-RT models; RT is a different, fully-preemptible build. The role detects and reports the running model rather than installing RT.
 
-**"How does irqbalance hurt low latency?"**
-> It periodically migrates interrupt affinity across CPUs. That can land a NIC interrupt on your isolated trading core, polluting its cache and adding jitter. You disable it and pin IRQs to housekeeping cores instead. Disabling irqbalance only *stops the reshuffling*, though — it doesn't move the existing IRQs. For that you write a CPU mask to each `/proc/irq/<N>/smp_affinity`, which my role does.
+**How does irqbalance hurt low latency?**
+> It periodically migrates interrupt affinity across CPUs. That can land a NIC interrupt on your isolated trading core, polluting its cache and adding jitter. You disable it and pin IRQs to housekeeping cores instead. Disabling irqbalance only *stops the reshuffling*, though — it doesn't move the existing IRQs. For that you write a CPU mask to each `/proc/irq/<N>/smp_affinity`, which the kernel-tuning role does.
 
-**"Which cores did you pin IRQs to, and how is the mask built?"**
-> I compute a housekeeping mask from the CPU count minus the isolated core — on my 4-vCPU box isolating core 2 that's cores 0, 1, 3, or `0xb`. I build it arithmetically (`range | difference | map('pow',2) | sum`) rather than with bit-shifts, because Ansible's Jinja rejects `<<`, and I guard the inputs with defaults so it still renders in `--check` mode. I write that to each writable IRQ's `smp_affinity`. The key nuance: `smp_affinity` is a *request* — the kernel applies the intersection of what I ask and what each IRQ permits, then reports back the *effective* mask. On my VM `0xb` settled to `0xa` (cores 1 and 3) for the device IRQs because core 0 wasn't accepted for those lines; the timer/cascade IRQs stay on all cores. I read back and report the effective value rather than assuming the write stuck — and either way every device interrupt is off my isolated core 2. On bare metal with a multi-queue NIC the same code pins each queue's IRQ for real.
+**Which cores are IRQs pinned to, and how is the mask built?**
+> A housekeeping mask is computed from the CPU count minus the isolated core — on the 4-vCPU box isolating core 2 that's cores 0, 1, 3, or `0xb`. It is built arithmetically (`range | difference | map('pow',2) | sum`) rather than with bit-shifts, because Ansible's Jinja rejects `<<`, and the inputs are guarded with defaults so it still renders in `--check` mode. That value is written to each writable IRQ's `smp_affinity`. The key nuance: `smp_affinity` is a *request* — the kernel applies the intersection of what was asked and what each IRQ permits, then reports back the *effective* mask. On this VM `0xb` settled to `0xa` (cores 1 and 3) for the device IRQs because core 0 wasn't accepted for those lines; the timer/cascade IRQs 0 and 2 stay on all cores (`0xf`). The role reads back and reports the effective value rather than assuming the write stuck — and either way every device interrupt is off the isolated core 2. On bare metal with a multi-queue NIC the same code pins each queue's IRQ for real.
 
-**"What about NUMA?"**
-> On a multi-socket box you keep the trading thread, its memory, and the NIC's interrupts on the same NUMA node to avoid slow cross-node memory access; you'd use `numactl` and disable automatic NUMA balancing. My laptop is single-socket so I can only describe it, but the sysctl `kernel.numa_balancing=0` is in my role.
+**What about NUMA?**
+> On a multi-socket box you keep the trading thread, its memory, and the NIC's interrupts on the same NUMA node to avoid slow cross-node memory access; you'd use `numactl` and disable automatic NUMA balancing. This laptop is single-socket so it can only be described, but the sysctl `kernel.numa_balancing=0` is in the role.
 
-**"Kernel bypass — DPDK vs the kernel stack?"**
-> DPDK polls the NIC in user space, bypassing the kernel network stack — roughly single-digit microseconds versus tens for the kernel path — but it burns a whole core polling, needs hugepages, core pinning, and a supported NIC, and you lose the kernel's mature tooling and TCP stack. It's worth it only when the NIC is the binding constraint. I deliberately left it out of scope here.
+**Kernel bypass — DPDK vs the kernel stack?**
+> DPDK polls the NIC in user space, bypassing the kernel network stack — roughly single-digit microseconds versus tens for the kernel path — but it burns a whole core polling, needs hugepages, core pinning, and a supported NIC, and you lose the kernel's mature tooling and TCP stack. It's worth it only when the NIC is the binding constraint. Deliberately out of scope here.
 
-**"What is tick-to-trade and how did you measure it?"**
-> The time from a market input to your order on the wire. I measure a round-trip analogue: from when the engine acts on a signal to when it gets the execution report, using a monotonic clock, recorded as a Prometheus histogram so I can read p99, plus a gauge for the latest sample on the dashboard.
+**What is tick-to-trade and how is it measured?**
+> The time from a market input to your order on the wire. The engine measures a round-trip analogue: from when it acts on a signal to when it gets the execution report, using a monotonic clock (`time.perf_counter()`), recorded as a Prometheus histogram so percentiles (p99) can be read, plus a gauge for the latest sample on the dashboard.
 
-**"Why a histogram for latency, not an average?"**
+**Why a histogram for latency, not an average?**
 > Averages hide the tail. In trading the p99/p99.9 is what hurts you. A histogram preserves the distribution so you can compute and alert on percentiles.
 
-**"What does your BOD check actually verify, and what happens if something fails?"**
+**How do I read the four trading_engine charts on the dashboard?**
+> 1) `engine_orders_total` is a counter charted as a *rate* (~9 orders/s) — the slope is what matters, not the cumulative value; ~9 rather than 10 because each cycle is the 100 ms sleep *plus* the round-trip wait. 2) `engine_t2t_microseconds` is the gauge — the most-recent T2T, ~0.9 ms baseline on loopback, with transient spikes to several ms that are host-scheduler jitter (or an occasional Python GC pause). 3) `engine_tick_to_trade_seconds` is the histogram as a heatmap — the y-axis is the bucket boundaries, colour is observations/s; the bright band sitting in the 1–2.5 ms buckets is the median, faint cells in higher buckets are the tail (your p99). 4) `engine_tick_to_trade_seconds_count` is the histogram's observation count as a rate, which should track the order rate one-to-one — if it dipped below, orders would be going out without fills coming back. The `python_gc` series (auto-exposed by `prometheus-client`) is worth knowing: a GC pause is one plausible cause of a tail spike — itself an argument for why production engines are C++ with no GC.
+
+**What does the BOD check verify, and what happens if something fails?**
 > Disk, memory, clock sync via chrony, CPU isolation, hugepages, THP, governor, NIC link, key services active, and exchange connectivity. It exits 0/1/2 for ready/warnings/not-ready. The systemd service uses `SuccessExitStatus=1` so warnings don't flag the unit, but a real failure (exit 2) does — so alerting can block a market open.
 
-**"India-specific: clock sync?"**
-> SEBI's algo-trading framework (circular CIR/MRD/DP/09/2012) requires the *exchange* to keep its clock synced to within ~1 microsecond precision and ±1 millisecond accuracy of an atomic reference before the open; members maintain audit trails and unique exchange order IDs. NSE colocation provides both NTP and PTP time services. My BOD clock check and chrony usage reflect why time sync is treated as a hard requirement.
+**India-specific: clock sync?**
+> SEBI's algo-trading framework (circular CIR/MRD/DP/09/2012) requires the *exchange* to keep its clock synced to within ~1 microsecond precision and ±1 millisecond accuracy of an atomic reference before the open; members maintain audit trails and unique exchange order IDs. NSE colocation provides both NTP and PTP time services. The BOD clock check and chrony usage reflect why time sync is treated as a hard requirement. See also the clock-skew note in [§15](#15-honest-limitations--how-bare-metal-differs).
 
-**"Why FIX and not ITCH/OUCH?"**
-> ITCH/OUCH are Nasdaq protocols, not NSE/BSE. I used generic FIX because the concepts transfer and it shows end-to-end stack understanding. NSE's real order interface is NNF (now encryption-mandated), with TBT/MTBT for market data.
+**Why FIX and not ITCH/OUCH?**
+> ITCH/OUCH are Nasdaq protocols, not NSE/BSE. This project uses generic FIX because the concepts transfer and it shows end-to-end stack understanding. NSE's real order interface is NNF (now encryption-mandated), with TBT/MTBT for market data.
 
-**"This control node manages itself — isn't that fake?"**
-> The control and managed node are co-located only to fit in 3 GB of RAM. The roles, inventory, SSH transport, and idempotency are identical to managing remote colo servers; in production I'd just point the inventory at the colo hosts. Nothing about the automation changes.
+**The control node manages itself — isn't that artificial?**
+> The control and managed node are co-located only to fit in 3 GB of RAM. The roles, inventory, SSH transport, and idempotency are identical to managing remote colo servers; in production you'd just point the inventory at the colo hosts. Nothing about the automation changes.
 
 ---
 
@@ -478,6 +495,15 @@ trade-ops-ansible/
 
 What a production version adds: bare-metal with pinned cores and BIOS tuning; PREEMPT_RT/tickless kernel; real NIC IRQ affinity; possibly kernel bypass; NUMA-aware placement; PTP time sync; redundant paths and sub-millisecond failover; a hardened, validated FIX engine.
 
+### Operational note: VM clock skew after suspend/resume
+
+A VirtualBox VM that is **saved/suspended and resumed later** comes back with its guest clock frozen at the moment of suspend — so it runs *behind* real (host) wall-clock time by however long it was paused. This produces two confusing symptoms that look like failures but aren't:
+
+1. **The dashboard appears to "stop."** Netdata stamps samples in *guest* time, but the browser's "now" follows *host* time, so everything between the last guest sample and host-now looks like an empty flatline gap. Data is actually flowing fine.
+2. **The BOD timer "doesn't fire."** The `Mon..Fri 08:45` `OnCalendar` is evaluated in guest time; if the guest clock hasn't reached that moment yet, the timer is simply still pending (`systemctl list-timers` shows it armed with hours "left").
+
+**Fix:** force chrony to step the clock to real time — `sudo chronyc makestep` — then confirm with `date`. Because the BOD timer has `Persistent=true`, the moment the clock jumps past a missed `08:45`, systemd fires the catch-up run automatically. **Prevent recurrence:** install VirtualBox Guest Additions (its time-sync re-disciplines the clock on resume), or run `chronyc makestep` after resuming. For a clean live demo, don't save-state the VM beforehand, and give the engine ~10 minutes of run time so the chart window is gap-free.
+
 ---
 
 ## 16. Glossary
@@ -488,6 +514,7 @@ What a production version adds: bare-metal with pinned cores and BIOS tuning; PR
 - **RCU (read-copy-update)** — a kernel synchronization mechanism whose deferred callbacks we offload off the isolated core.
 - **Hugepages / TLB** — 2 MB (vs 4 KB) memory pages; the TLB is the CPU's address-translation cache, and hugepages reduce expensive TLB misses.
 - **THP (Transparent Huge Pages)** — automatic hugepages whose background compaction causes jitter; disabled in favor of explicit hugepages.
+- **MAP_HUGETLB / hugetlbfs** — the explicit, opt-in ways an app consumes the reserved hugepage pool; without one of them a reserved pool stays idle (`HugePages_Free` unchanged).
 - **IRQ** — hardware interrupt; the CPU stops to service one. We keep them off the trading core.
 - **smp_affinity** — per-IRQ CPU mask under `/proc/irq/<N>/`; a *request* the kernel intersects with what's allowed, returning an *effective* mask. We write the housekeeping mask to steer device IRQs off the isolated core.
 - **Housekeeping cores** — the non-isolated cores that absorb IRQs, RCU callbacks, and kernel threads so the isolated core stays quiet.
@@ -499,6 +526,8 @@ What a production version adds: bare-metal with pinned cores and BIOS tuning; PR
 - **Tick-to-trade (T2T)** — latency from market input to order on the wire; the headline trading metric.
 - **NewOrderSingle (35=D) / ExecutionReport (35=8)** — the order and its fill confirmation in FIX.
 - **Prometheus metric types** — Counter (only increases), Gauge (up/down), Histogram (bucketed distribution for percentiles).
+- **Prometheus exposition format vs Prometheus server** — the format is a plain-text convention for publishing metrics over HTTP (used here via `prometheus-client`); the *server* is a separate scraper+TSDB product (not run here — Netdata's collector scrapes the endpoint instead).
+- **chronyc makestep** — forces an immediate one-shot correction of the system clock to NTP time; the fix for large VM clock skew after suspend/resume.
 - **qdisc / netem** — Linux traffic-control queueing discipline / network emulator used to inject delay.
 - **systemd unit / service / timer** — the init system's managed objects; services run programs, timers schedule them.
 - **idempotency** — re-running automation yields no further changes; safe to repeat.

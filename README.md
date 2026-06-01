@@ -189,4 +189,4 @@ The dashboard shows these alongside system metrics: **per-core CPU** (including 
 
 Ubuntu Server · Ansible / ansible-lint · Netdata · Python 3 (`simplefix`, `prometheus-client`) · systemd · chrony · `tc/netem` · `rt-tests` (`cyclictest`) · VirtualBox · Git/GitHub.
 
-**For the full reasoning behind every decision, a line-by-line explanation of the FIX scripts, a complete data-flow map, and an interview Q&A bank, see [`ProjectDeepDive.md`](./ProjectDeepDive.md).**
+**For the full reasoning behind every decision, a line-by-line explanation of the FIX scripts, a complete data-flow map, and an FAQ, see [`ProjectDeepDive.md`](./ProjectDeepDive.md).**
